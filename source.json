@@ -1,0 +1,6 @@
+{
+  "owner": "jupyterhub",
+  "repo": "action-k3s-helm",
+  "version": "",
+  "url": "https://github.com/jupyterhub/action-k3s-helm"
+}
