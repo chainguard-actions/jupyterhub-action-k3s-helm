@@ -1,0 +1,284 @@
+name: Test basic K3S and Helm installation with defaults
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install yq (mikefarah/yq v4) required by action for calico setup
+        run: |
+          set -e
+          YQ_VERSION="v4.44.3"
+          echo "Installing yq ${YQ_VERSION}..."
+          sudo curl -fsSL \
+            "https://github.com/mikefarah/yq/releases/download/${YQ_VERSION}/yq_linux_amd64" \
+            -o /usr/local/bin/yq
+          sudo chmod +x /usr/local/bin/yq
+          yq --version
+          echo "yq installed successfully"
+
+      - name: Prepare fake k3s kubeconfig and mock binaries
+        run: |
+          set -e
+
+          # Create the fake k3s kubeconfig that the action reads via
+          # "sudo cat /etc/rancher/k3s/k3s.yaml"
+          sudo mkdir -p /etc/rancher/k3s
+          sudo tee /etc/rancher/k3s/k3s.yaml > /dev/null << 'KCEOF'
+          apiVersion: v1
+          clusters:
+          - cluster:
+              server: https://127.0.0.1:6443
+            name: default
+          contexts:
+          - context:
+              cluster: default
+              user: default
+            name: default
+          current-context: default
+          kind: Config
+          preferences: {}
+          users:
+          - name: default
+            user:
+              token: fake-token
+          KCEOF
+
+          MOCK_BIN="$HOME/.local/mock-bin"
+          mkdir -p "$MOCK_BIN"
+
+          # ---- fake k3s binary ----
+          cat > "$MOCK_BIN/k3s" << 'EOF'
+          #!/bin/sh
+          if [ "$1" = "--version" ]; then
+            echo "k3s version v1.29.0+k3s1 (abc1234)"
+            echo "go version go1.21.0"
+          fi
+          exit 0
+          EOF
+          chmod +x "$MOCK_BIN/k3s"
+
+          # ---- fake helm binary ----
+          cat > "$MOCK_BIN/helm" << 'EOF'
+          #!/bin/sh
+          if [ "$1" = "version" ]; then
+            echo "v3.13.0+g825e86f"
+          fi
+          exit 0
+          EOF
+          chmod +x "$MOCK_BIN/helm"
+
+          # ---- fake kubectl binary ----
+          cat > "$MOCK_BIN/kubectl" << 'EOF'
+          #!/bin/sh
+          case "$1" in
+            apply)
+              cat > /dev/null
+              echo "configured"
+              ;;
+            rollout)
+              echo "successfully rolled out"
+              ;;
+            wait)
+              exit 0
+              ;;
+            get)
+              echo "NAME   READY   UP-TO-DATE   AVAILABLE   AGE"
+              echo "$3   1/1     1            1           1m"
+              ;;
+            *)
+              echo "kubectl mock: $*"
+              ;;
+          esac
+          exit 0
+          EOF
+          chmod +x "$MOCK_BIN/kubectl"
+
+          # ---- fake curl ----
+          # Handles both pipe form (stdout) and -o FILE form (write to file)
+          cat > "$MOCK_BIN/curl" << 'CURLEOF'
+          #!/bin/sh
+          out=""
+          url=""
+          prev=""
+          for arg in "$@"; do
+            case "$prev" in -o|--output) out="$arg" ;; esac
+            case "$arg" in http://*|https://*) url="$arg" ;; esac
+            prev="$arg"
+          done
+
+          write_payload() {
+            if [ -n "$out" ]; then
+              cat > "$out"
+            else
+              cat
+            fi
+          }
+
+          case "$url" in
+            *get.k3s.io*)
+              write_payload << 'K3SEOF'
+          #!/bin/sh
+          # Fake k3s installer - kubeconfig already created by test setup
+          echo "Fake k3s installer: nothing to do, kubeconfig pre-created"
+          exit 0
+          K3SEOF
+              ;;
+            *calico*)
+              write_payload << 'CALICOEOF'
+          ---
+          apiVersion: v1
+          kind: ConfigMap
+          metadata:
+            name: calico-config
+            namespace: kube-system
+          data:
+            cni_network_config: |
+              {
+                "name": "k8s-pod-network",
+                "cniVersion": "0.3.1",
+                "plugins": [
+                  {
+                    "type": "calico",
+                    "log_level": "info"
+                  }
+                ]
+              }
+          ---
+          apiVersion: apps/v1
+          kind: DaemonSet
+          metadata:
+            name: calico-node
+            namespace: kube-system
+          spec:
+            selector:
+              matchLabels:
+                k8s-app: calico-node
+            template:
+              metadata:
+                labels:
+                  k8s-app: calico-node
+              spec:
+                containers:
+                - name: calico-node
+                  image: docker.io/calico/cni:v3.31.4
+          ---
+          apiVersion: apps/v1
+          kind: Deployment
+          metadata:
+            name: calico-kube-controllers
+            namespace: kube-system
+          spec:
+            selector:
+              matchLabels:
+                k8s-app: calico-kube-controllers
+            template:
+              metadata:
+                labels:
+                  k8s-app: calico-kube-controllers
+              spec:
+                containers:
+                - name: calico-kube-controllers
+                  image: docker.io/calico/kube-controllers:v3.31.4
+          CALICOEOF
+              ;;
+            *helm/master/scripts*|*get-helm*)
+              write_payload << 'HELMEOF'
+          #!/bin/sh
+          echo "Fake helm installer: helm already available in PATH"
+          exit 0
+          HELMEOF
+              ;;
+            *)
+              exec /usr/bin/curl "$@"
+              ;;
+          esac
+          exit 0
+          CURLEOF
+          chmod +x "$MOCK_BIN/curl"
+
+          # Prepend mock bin to PATH for subsequent steps
+          echo "$MOCK_BIN" >> $GITHUB_PATH
+          echo "Mock binaries installed in $MOCK_BIN"
+          ls -la "$MOCK_BIN"
+
+      - name: Install K3S and Helm with defaults
+        id: action
+        uses: .
+
+      - name: Assert kubeconfig output is set
+        env:
+          KUBECONFIG_PATH: ${{ steps.action.outputs.kubeconfig }}
+        run: |
+          echo "kubeconfig: $KUBECONFIG_PATH"
+          if [ -z "$KUBECONFIG_PATH" ]; then
+            echo "FAIL: kubeconfig output is empty"
+            exit 1
+          fi
+          if [ ! -f "$KUBECONFIG_PATH" ]; then
+            echo "FAIL: kubeconfig file does not exist at $KUBECONFIG_PATH"
+            exit 1
+          fi
+          echo "PASS: kubeconfig output is set and file exists"
+
+      - name: Assert k3s-version output is set
+        env:
+          K3S_VERSION: ${{ steps.action.outputs.k3s-version }}
+        run: |
+          echo "k3s-version: $K3S_VERSION"
+          if [ -z "$K3S_VERSION" ]; then
+            echo "FAIL: k3s-version output is empty"
+            exit 1
+          fi
+          if ! echo "$K3S_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+$'; then
+            echo "FAIL: k3s-version does not match expected pattern (e.g. v1.29.0+k3s1): $K3S_VERSION"
+            exit 1
+          fi
+          echo "PASS: k3s-version output is set: $K3S_VERSION"
+
+      - name: Assert k8s-version output is set
+        env:
+          K8S_VERSION: ${{ steps.action.outputs.k8s-version }}
+        run: |
+          echo "k8s-version: $K8S_VERSION"
+          if [ -z "$K8S_VERSION" ]; then
+            echo "FAIL: k8s-version output is empty"
+            exit 1
+          fi
+          if ! echo "$K8S_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "FAIL: k8s-version does not match expected pattern (e.g. v1.29.0): $K8S_VERSION"
+            exit 1
+          fi
+          echo "PASS: k8s-version output is set: $K8S_VERSION"
+
+      - name: Assert calico-version output is set
+        env:
+          CALICO_VERSION: ${{ steps.action.outputs.calico-version }}
+        run: |
+          echo "calico-version: $CALICO_VERSION"
+          if [ -z "$CALICO_VERSION" ]; then
+            echo "FAIL: calico-version output is empty"
+            exit 1
+          fi
+          if ! echo "$CALICO_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "FAIL: calico-version does not match expected pattern (e.g. v3.31.4): $CALICO_VERSION"
+            exit 1
+          fi
+          echo "PASS: calico-version output is set: $CALICO_VERSION"
+
+      - name: Assert helm-version output is set
+        env:
+          HELM_VERSION: ${{ steps.action.outputs.helm-version }}
+        run: |
+          echo "helm-version: $HELM_VERSION"
+          if [ -z "$HELM_VERSION" ]; then
+            echo "FAIL: helm-version output is empty"
+            exit 1
+          fi
+          if ! echo "$HELM_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "FAIL: helm-version does not match expected pattern (e.g. v3.13.0): $HELM_VERSION"
+            exit 1
+          fi
+          echo "PASS: helm-version output is set: $HELM_VERSION"

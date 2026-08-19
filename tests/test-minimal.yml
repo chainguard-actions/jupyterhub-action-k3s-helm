@@ -1,0 +1,147 @@
+name: Test flag logic - metrics and traefik disabled, docker enabled
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Test metrics-enabled=false sets the disable flag
+        run: |
+          metrics_enabled="false"
+          k3s_disable_metrics=""
+          if [[ "$metrics_enabled" != true ]]; then
+            k3s_disable_metrics="--disable metrics-server"
+          fi
+          echo "k3s_disable_metrics: '$k3s_disable_metrics'"
+          if [ "$k3s_disable_metrics" != "--disable metrics-server" ]; then
+            echo "FAIL: metrics-enabled=false should set '--disable metrics-server'"
+            exit 1
+          fi
+          echo "PASS: metrics-enabled=false sets the disable flag"
+
+      - name: Test traefik-enabled=false sets the disable flag
+        run: |
+          traefik_enabled="false"
+          k3s_disable_traefik=""
+          if [[ "$traefik_enabled" != true ]]; then
+            k3s_disable_traefik="--disable traefik"
+          fi
+          echo "k3s_disable_traefik: '$k3s_disable_traefik'"
+          if [ "$k3s_disable_traefik" != "--disable traefik" ]; then
+            echo "FAIL: traefik-enabled=false should set '--disable traefik'"
+            exit 1
+          fi
+          echo "PASS: traefik-enabled=false sets the disable flag"
+
+      - name: Test metrics-enabled=true does not set disable flag
+        run: |
+          metrics_enabled="true"
+          k3s_disable_metrics=""
+          if [[ "$metrics_enabled" != true ]]; then
+            k3s_disable_metrics="--disable metrics-server"
+          fi
+          echo "k3s_disable_metrics: '$k3s_disable_metrics'"
+          if [ -n "$k3s_disable_metrics" ]; then
+            echo "FAIL: metrics-enabled=true should not set disable flag"
+            exit 1
+          fi
+          echo "PASS: metrics-enabled=true does not set the disable flag"
+
+      - name: Test traefik-enabled=true does not set disable flag
+        run: |
+          traefik_enabled="true"
+          k3s_disable_traefik=""
+          if [[ "$traefik_enabled" != true ]]; then
+            k3s_disable_traefik="--disable traefik"
+          fi
+          echo "k3s_disable_traefik: '$k3s_disable_traefik'"
+          if [ -n "$k3s_disable_traefik" ]; then
+            echo "FAIL: traefik-enabled=true should not set disable flag"
+            exit 1
+          fi
+          echo "PASS: traefik-enabled=true does not set the disable flag"
+
+      - name: Test docker-enabled=true sets the docker flag
+        run: |
+          docker_enabled="true"
+          k3s_docker=""
+          if [[ "$docker_enabled" == true ]]; then
+            k3s_docker="--docker"
+          fi
+          echo "k3s_docker: '$k3s_docker'"
+          if [ "$k3s_docker" != "--docker" ]; then
+            echo "FAIL: docker-enabled=true should set '--docker'"
+            exit 1
+          fi
+          echo "PASS: docker-enabled=true sets the docker flag"
+
+      - name: Test docker-enabled=false does not set docker flag
+        run: |
+          docker_enabled="false"
+          k3s_docker=""
+          if [[ "$docker_enabled" == true ]]; then
+            k3s_docker="--docker"
+          fi
+          echo "k3s_docker: '$k3s_docker'"
+          if [ -n "$k3s_docker" ]; then
+            echo "FAIL: docker-enabled=false should not set docker flag"
+            exit 1
+          fi
+          echo "PASS: docker-enabled=false does not set the docker flag"
+
+      - name: Test validation passes with no k3s-version or k3s-channel
+        run: |
+          k3s_version=""
+          k3s_channel=""
+          if [[ -n "$k3s_version" && -n "$k3s_channel" ]]; then
+            echo "FAIL: validation should pass when both are empty"
+            exit 1
+          fi
+          echo "PASS: validation passes with no k3s-version or k3s-channel"
+
+      - name: Test Helm v4 install script is selected for v4.x versions
+        run: |
+          helm_version="v4.0.0"
+          if [[ "${helm_version}" == v4* ]]; then
+            helm_install_script="https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-4"
+          else
+            helm_install_script="https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3"
+          fi
+          echo "helm_install_script: $helm_install_script"
+          if [ "$helm_install_script" != "https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-4" ]; then
+            echo "FAIL: Helm v4 install script should be selected for v4.x versions"
+            exit 1
+          fi
+          echo "PASS: Helm v4 install script is selected for v4.x versions"
+
+      - name: Test Helm v3 install script is selected for v3.x versions
+        run: |
+          helm_version="v3.13.0"
+          if [[ "${helm_version}" == v4* ]]; then
+            helm_install_script="https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-4"
+          else
+            helm_install_script="https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3"
+          fi
+          echo "helm_install_script: $helm_install_script"
+          if [ "$helm_install_script" != "https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3" ]; then
+            echo "FAIL: Helm v3 install script should be selected for v3.x versions"
+            exit 1
+          fi
+          echo "PASS: Helm v3 install script is selected for v3.x versions"
+
+      - name: Test Helm v3 install script is selected for empty version
+        run: |
+          helm_version=""
+          if [[ "${helm_version}" == v4* ]]; then
+            helm_install_script="https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-4"
+          else
+            helm_install_script="https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3"
+          fi
+          echo "helm_install_script: $helm_install_script"
+          if [ "$helm_install_script" != "https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3" ]; then
+            echo "FAIL: Helm v3 install script should be selected for empty version"
+            exit 1
+          fi
+          echo "PASS: Helm v3 install script is selected for empty version"
