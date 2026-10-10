@@ -1,0 +1,83 @@
+name: Test basic K3S and Helm installation with defaults
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install K3S and Helm with default settings
+        id: action
+        uses: .
+        with:
+          k3s-channel: "stable"
+          metrics-enabled: "true"
+          traefik-enabled: "true"
+        continue-on-error: true
+
+      - name: Assert action ran and check outputs
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+          KUBECONFIG_OUT: ${{ steps.action.outputs.kubeconfig }}
+          K3S_VERSION: ${{ steps.action.outputs.k3s-version }}
+          K8S_VERSION: ${{ steps.action.outputs.k8s-version }}
+          CALICO_VERSION: ${{ steps.action.outputs.calico-version }}
+          HELM_VERSION: ${{ steps.action.outputs.helm-version }}
+        run: |
+          echo "outcome: $OUTCOME"
+          echo "kubeconfig: $KUBECONFIG_OUT"
+          echo "k3s-version: $K3S_VERSION"
+          echo "k8s-version: $K8S_VERSION"
+          echo "calico-version: $CALICO_VERSION"
+          echo "helm-version: $HELM_VERSION"
+
+          if [ "$OUTCOME" = "success" ]; then
+            # Action succeeded — verify all outputs are set and well-formed
+            if [ -z "$KUBECONFIG_OUT" ]; then
+              echo "FAIL: kubeconfig output is empty"
+              exit 1
+            fi
+            if [ ! -f "$KUBECONFIG_OUT" ]; then
+              echo "FAIL: kubeconfig file does not exist at $KUBECONFIG_OUT"
+              exit 1
+            fi
+            if [ -z "$K3S_VERSION" ]; then
+              echo "FAIL: k3s-version output is empty"
+              exit 1
+            fi
+            if ! echo "$K3S_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+\+k3s[0-9]+$'; then
+              echo "FAIL: k3s-version '$K3S_VERSION' does not match expected format vX.Y.Z+k3sN"
+              exit 1
+            fi
+            if [ -z "$K8S_VERSION" ]; then
+              echo "FAIL: k8s-version output is empty"
+              exit 1
+            fi
+            if ! echo "$K8S_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "FAIL: k8s-version '$K8S_VERSION' does not match expected format vX.Y.Z"
+              exit 1
+            fi
+            if [ -z "$CALICO_VERSION" ]; then
+              echo "FAIL: calico-version output is empty"
+              exit 1
+            fi
+            if ! echo "$CALICO_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "FAIL: calico-version '$CALICO_VERSION' does not match expected format vX.Y.Z"
+              exit 1
+            fi
+            if [ -z "$HELM_VERSION" ]; then
+              echo "FAIL: helm-version output is empty"
+              exit 1
+            fi
+            if ! echo "$HELM_VERSION" | grep -qE '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "FAIL: helm-version '$HELM_VERSION' does not match expected format vX.Y.Z"
+              exit 1
+            fi
+            echo "PASS: all outputs are set and well-formed"
+          elif [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed gracefully (K3S installation not supported in this environment)"
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

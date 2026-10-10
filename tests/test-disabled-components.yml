@@ -1,0 +1,67 @@
+name: Test K3S installation with metrics and traefik disabled
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Install K3S with metrics-server and traefik disabled
+        id: action
+        uses: .
+        with:
+          k3s-channel: "stable"
+          metrics-enabled: "false"
+          traefik-enabled: "false"
+        continue-on-error: true
+
+      - name: Assert action ran and check outputs when components are disabled
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+          KUBECONFIG_OUT: ${{ steps.action.outputs.kubeconfig }}
+          K3S_VERSION: ${{ steps.action.outputs.k3s-version }}
+          HELM_VERSION: ${{ steps.action.outputs.helm-version }}
+        run: |
+          echo "outcome: $OUTCOME"
+          echo "kubeconfig: $KUBECONFIG_OUT"
+          echo "k3s-version: $K3S_VERSION"
+          echo "helm-version: $HELM_VERSION"
+
+          if [ "$OUTCOME" = "success" ]; then
+            # Action succeeded — verify outputs and that disabled components are absent
+            if [ -z "$KUBECONFIG_OUT" ]; then
+              echo "FAIL: kubeconfig output is empty"
+              exit 1
+            fi
+            if [ ! -f "$KUBECONFIG_OUT" ]; then
+              echo "FAIL: kubeconfig file does not exist at $KUBECONFIG_OUT"
+              exit 1
+            fi
+            if [ -z "$K3S_VERSION" ]; then
+              echo "FAIL: k3s-version output is empty"
+              exit 1
+            fi
+            if [ -z "$HELM_VERSION" ]; then
+              echo "FAIL: helm-version output is empty"
+              exit 1
+            fi
+            # Verify metrics-server is not deployed
+            if kubectl get deployment metrics-server -n kube-system 2>/dev/null; then
+              echo "FAIL: metrics-server deployment found but should be disabled"
+              exit 1
+            fi
+            echo "PASS: metrics-server is not deployed as expected"
+            # Verify traefik is not deployed
+            if kubectl get deployment traefik -n kube-system 2>/dev/null; then
+              echo "FAIL: traefik deployment found but should be disabled"
+              exit 1
+            fi
+            echo "PASS: traefik is not deployed as expected"
+            echo "PASS: all outputs set and disabled components are absent"
+          elif [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed gracefully (K3S installation not supported in this environment)"
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

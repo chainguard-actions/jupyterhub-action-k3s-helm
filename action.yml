@@ -93,11 +93,11 @@ runs:
     #
     - name: Validate input
       env:
-        K3S_VERSION: ${{ inputs.k3s-version }}
-        K3S_CHANNEL: ${{ inputs.k3s-channel }}
+        INPUT_K3S_VERSION: ${{ inputs.k3s-version }}
+        INPUT_K3S_CHANNEL: ${{ inputs.k3s-channel }}
       run: |
         echo "::group::Validate input"
-        if [[ -n "$K3S_VERSION" && -n "$K3S_CHANNEL" ]]; then
+        if [[ -n "$INPUT_K3S_VERSION" && -n "$INPUT_K3S_CHANNEL" ]]; then
           echo "k3s-version and k3s-channel must not be specified simultaneously!"
           exit 1
         fi
@@ -114,25 +114,22 @@ runs:
     #
     - name: Setup k3s ${{ inputs.k3s-version }}${{ inputs.k3s-channel }}
       env:
-        K3S_VERSION: ${{ inputs.k3s-version }}
-        K3S_CHANNEL: ${{ inputs.k3s-channel }}
-        METRICS_ENABLED: ${{ inputs.metrics-enabled }}
-        TRAEFIK_ENABLED: ${{ inputs.traefik-enabled }}
-        DOCKER_ENABLED: ${{ inputs.docker-enabled }}
-        EXTRA_SETUP_ARGS: ${{ inputs.extra-setup-args }}
+        INPUT_K3S_VERSION: ${{ inputs.k3s-version }}
+        INPUT_K3S_CHANNEL: ${{ inputs.k3s-channel }}
+        INPUT_METRICS_ENABLED: ${{ inputs.metrics-enabled }}
+        INPUT_TRAEFIK_ENABLED: ${{ inputs.traefik-enabled }}
+        INPUT_DOCKER_ENABLED: ${{ inputs.docker-enabled }}
+        INPUT_EXTRA_SETUP_ARGS: ${{ inputs.extra-setup-args }}
       run: |
-        echo "::group::Setup k3s $K3S_VERSION$K3S_CHANNEL"
-        k3s_disable_metrics=()
-        if [[ "$METRICS_ENABLED" != true ]]; then
-          k3s_disable_metrics=("--disable" "metrics-server")
+        echo "::group::Setup k3s $INPUT_K3S_VERSION$INPUT_K3S_CHANNEL"
+        if [[ "$INPUT_METRICS_ENABLED" != true ]]; then
+          k3s_disable_metrics="--disable metrics-server"
         fi
-        k3s_disable_traefik=()
-        if [[ "$TRAEFIK_ENABLED" != true ]]; then
-          k3s_disable_traefik=("--disable" "traefik")
+        if [[ "$INPUT_TRAEFIK_ENABLED" != true ]]; then
+          k3s_disable_traefik="--disable traefik"
         fi
-        k3s_docker=()
-        if [[ "$DOCKER_ENABLED" == true ]]; then
-          k3s_docker=("--docker")
+        if [[ "$INPUT_DOCKER_ENABLED" == true ]]; then
+          k3s_docker=--docker
         fi
         # We want to provide a new default value for the --egress-selector-mode
         # flag to avoid an intermittent issue possibly not fully resolved:
@@ -141,24 +138,30 @@ runs:
         # Details about the option available at
         # https://docs.k3s.io/installation/network-options#control-plane-egress-selector-configuration.
         #
-        default_extra_setup_args=()
-        if [[ "$EXTRA_SETUP_ARGS" != *--egress-selector-mode* ]]; then
-          default_extra_setup_args=("--egress-selector-mode=disabled")
+        if [[ "$INPUT_EXTRA_SETUP_ARGS" != *--egress-selector-mode* ]]; then
+          default_extra_setup_args=--egress-selector-mode=disabled
         fi
-        # Split EXTRA_SETUP_ARGS into an array to safely handle multiple arguments
-        read -ra extra_setup_args_array <<< "$EXTRA_SETUP_ARGS"
-        # Download the k3s installer script to a file before executing it
-        curl -sfL --output /tmp/k3s-install.sh https://get.k3s.io
-        chmod 700 /tmp/k3s-install.sh
-        INSTALL_K3S_VERSION="$K3S_VERSION" INSTALL_K3S_CHANNEL="$K3S_CHANNEL" \
-          /tmp/k3s-install.sh \
-          "${k3s_disable_metrics[@]}" \
-          "${k3s_disable_traefik[@]}" \
+
+        # Tokenize extra-setup-args into an array (quote-aware, like the shell)
+        extra_setup_args=()
+        if [ -n "$INPUT_EXTRA_SETUP_ARGS" ]; then
+          while IFS= read -r -d '' t; do extra_setup_args+=("$t"); done \
+            < <(printf '%s' "$INPUT_EXTRA_SETUP_ARGS" | xargs printf '%s\0')
+        fi
+
+        K3S_INSTALL_SCRIPT="$(mktemp)"
+        curl -sfL https://get.k3s.io -o "$K3S_INSTALL_SCRIPT"
+        INSTALL_K3S_VERSION="$INPUT_K3S_VERSION" \
+          INSTALL_K3S_CHANNEL="$INPUT_K3S_CHANNEL" \
+          sh "$K3S_INSTALL_SCRIPT" \
+          ${k3s_disable_metrics} \
+          ${k3s_disable_traefik} \
           --disable-network-policy \
           --flannel-backend=none \
-          "${k3s_docker[@]}" \
-          "${extra_setup_args_array[@]}" \
-          "${default_extra_setup_args[@]}"
+          ${k3s_docker} \
+          "${extra_setup_args[@]}" \
+          ${default_extra_setup_args}
+        rm -f "$K3S_INSTALL_SCRIPT"
         echo "::endgroup::"
       shell: bash
     # By providing a kubeconfig owned by the current user with 600 permissions,
@@ -212,13 +215,13 @@ runs:
     # install Helm at this point for example.
     - name: Setup Helm ${{ inputs.helm-version }}
       env:
-        HELM_VERSION: ${{ inputs.helm-version }}
+        INPUT_HELM_VERSION: ${{ inputs.helm-version }}
       run: |
-        echo "::group::Setup Helm $HELM_VERSION"
-        # Download the Helm installer script to a file before executing it
-        curl -sf --output /tmp/get-helm-3.sh https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
-        chmod 700 /tmp/get-helm-3.sh
-        DESIRED_VERSION="$HELM_VERSION" /tmp/get-helm-3.sh
+        echo "::group::Setup Helm $INPUT_HELM_VERSION"
+        HELM_INSTALL_SCRIPT="$(mktemp)"
+        curl -sf https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 -o "$HELM_INSTALL_SCRIPT"
+        DESIRED_VERSION="$INPUT_HELM_VERSION" bash "$HELM_INSTALL_SCRIPT"
+        rm -f "$HELM_INSTALL_SCRIPT"
         echo "::endgroup::"
       shell: bash
     - name: Set version output
@@ -234,8 +237,8 @@ runs:
       shell: bash
     - name: Wait for calico, coredns, metrics server, traefik
       env:
-        METRICS_ENABLED: ${{ inputs.metrics-enabled }}
-        TRAEFIK_ENABLED: ${{ inputs.traefik-enabled }}
+        INPUT_METRICS_ENABLED: ${{ inputs.metrics-enabled }}
+        INPUT_TRAEFIK_ENABLED: ${{ inputs.traefik-enabled }}
       run: |
         echo "::group::Wait for daemonset/calico-node"
         kubectl rollout status --watch --timeout=5m daemonset/calico-node -n kube-system
@@ -250,13 +253,13 @@ runs:
         echo "::endgroup::"
 
         echo "::group::Wait for deployment/metrics-server"
-        if [[ "$METRICS_ENABLED" == true ]]; then
+        if [[ "$INPUT_METRICS_ENABLED" == true ]]; then
           kubectl rollout status --watch --timeout=5m deployment/metrics-server -n kube-system
         fi
         echo "::endgroup::"
 
         echo "::group::Wait for deployment/traefik"
-        if [[ "$TRAEFIK_ENABLED" == true ]]; then
+        if [[ "$INPUT_TRAEFIK_ENABLED" == true ]]; then
           # NOTE: Different versions of k3s install traefik in different ways,
           #       by waiting for these jobs if they exist, we will be fine no
           #       matter what.
