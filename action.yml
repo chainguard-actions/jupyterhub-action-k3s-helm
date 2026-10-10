@@ -121,7 +121,7 @@ runs:
         INPUT_DOCKER_ENABLED: ${{ inputs.docker-enabled }}
         INPUT_EXTRA_SETUP_ARGS: ${{ inputs.extra-setup-args }}
       run: |
-        echo "::group::Setup k3s $INPUT_K3S_VERSION$INPUT_K3S_CHANNEL"
+        printf '::group::Setup k3s %s%s\n' "$INPUT_K3S_VERSION" "$INPUT_K3S_CHANNEL"
         if [[ "$INPUT_METRICS_ENABLED" != true ]]; then
           k3s_disable_metrics="--disable metrics-server"
         fi
@@ -142,24 +142,25 @@ runs:
           default_extra_setup_args=--egress-selector-mode=disabled
         fi
 
-        # Tokenize extra-setup-args into an array (quote-aware, like the shell)
-        extra_setup_args=()
+        # Tokenize extra-setup-args into an array (quote-aware, like the shell would)
+        extra_args=()
         if [ -n "$INPUT_EXTRA_SETUP_ARGS" ]; then
-          while IFS= read -r -d '' t; do extra_setup_args+=("$t"); done \
+          while IFS= read -r -d '' t; do extra_args+=("$t"); done \
             < <(printf '%s' "$INPUT_EXTRA_SETUP_ARGS" | xargs printf '%s\0')
         fi
 
+        # Download the k3s install script to a temp file before executing
         K3S_INSTALL_SCRIPT="$(mktemp)"
         curl -sfL https://get.k3s.io -o "$K3S_INSTALL_SCRIPT"
         INSTALL_K3S_VERSION="$INPUT_K3S_VERSION" \
-          INSTALL_K3S_CHANNEL="$INPUT_K3S_CHANNEL" \
-          sh "$K3S_INSTALL_SCRIPT" \
+        INSTALL_K3S_CHANNEL="$INPUT_K3S_CHANNEL" \
+        sh "$K3S_INSTALL_SCRIPT" - \
           ${k3s_disable_metrics} \
           ${k3s_disable_traefik} \
           --disable-network-policy \
           --flannel-backend=none \
           ${k3s_docker} \
-          "${extra_setup_args[@]}" \
+          "${extra_args[@]}" \
           ${default_extra_setup_args}
         rm -f "$K3S_INSTALL_SCRIPT"
         echo "::endgroup::"
@@ -217,7 +218,7 @@ runs:
       env:
         INPUT_HELM_VERSION: ${{ inputs.helm-version }}
       run: |
-        echo "::group::Setup Helm $INPUT_HELM_VERSION"
+        printf '::group::Setup Helm %s\n' "$INPUT_HELM_VERSION"
         HELM_INSTALL_SCRIPT="$(mktemp)"
         curl -sf https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 -o "$HELM_INSTALL_SCRIPT"
         DESIRED_VERSION="$INPUT_HELM_VERSION" bash "$HELM_INSTALL_SCRIPT"
