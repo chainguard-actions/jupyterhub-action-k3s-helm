@@ -4,51 +4,84 @@
 
 > This file was generated automatically by the hardening agent.
 
-**Policy SHA:** `d636be7e43ef829af6e853da6b3c7566db9f72fe`
+**Policy SHA:** `374911c4be584df24e6da57af2d990570ef0f859`
 
 **Test Policy SHA:** `843adf9e4b8f85d0c08b27b9d0b09dd094b54702`
 
 **Harden Agent Version:** `2`
 
-Action **jupyterhub--action-k3s-helm/v4.0.1** was hardened automatically. 17 finding(s) were identified and resolved across 2 iteration(s).
+Action **jupyterhub--action-k3s-helm/v4.0.1** was hardened automatically. 24 finding(s) were identified and resolved across 1 iteration(s).
 
 ## Findings Fixed
 
 ### script-injection (severity: high)
 
-Sub-rule (a): Multiple `${{ inputs.* }}` expressions are interpolated directly inside `run:` shell command strings without going through env vars, allowing an attacker to inject arbitrary shell commands via action inputs. Affected lines include:
-- "Validate input" step: `if [[ -n "${{ inputs.k3s-version }}" && -n "${{ inputs.k3s-channel }}" ]]` — inputs interpolated directly into the shell string.
-- "Setup k3s" step: `${{ inputs.metrics-enabled }}`, `${{ inputs.traefik-enabled }}`, `${{ inputs.docker-enabled }}`, `${{ inputs.extra-setup-args }}`, `${{ inputs.k3s-version }}`, `${{ inputs.k3s-channel }}` all interpolated directly into the shell script. Notably `${{ inputs.extra-setup-args }}` is passed completely unquoted as a positional argument to `sh`.
-- "Setup Helm" step: `${{ inputs.helm-version }}` interpolated directly into the shell string.
-- "Wait for calico..." step: `${{ inputs.metrics-enabled }}` and `${{ inputs.traefik-enabled }}` interpolated directly into the shell string.
-All of these should be moved to `env:` block variables and then referenced as double-quoted shell variables (e.g., `"$INPUT_VAR"`).
+Rule (a): the 'Validate input' step puts expressions straight into the run: script: `if [[ -n "${{ inputs.k3s-version }}" && -n "${{ inputs.k3s-channel }}" ]]`.
 
 Locations:
 
-- `action.yml:84`
-- `action.yml:92`
-- `action.yml:95`
-- `action.yml:98`
-- `action.yml:101`
-- `action.yml:107`
-- `action.yml:113`
-- `action.yml:115`
-- `action.yml:143`
-- `action.yml:144`
-- `action.yml:162`
-- `action.yml:169`
+- `action.yml:87`
+
+### script-injection (severity: high)
+
+Rule (a): the 'Setup k3s' step puts expressions straight into the run: script, including `echo "::group::Setup k3s ${{ inputs.k3s-version }}${{ inputs.k3s-channel }}"`, `[[ "${{ inputs.metrics-enabled }}" != true ]]`, `[[ "${{ inputs.traefik-enabled }}" != true ]]`, `[[ "${{ inputs.docker-enabled }}" == true ]]`, `[[ "${{ inputs.extra-setup-args }}" != *--egress-selector-mode* ]]`, `INSTALL_K3S_VERSION="${{ inputs.k3s-version }}" INSTALL_K3S_CHANNEL="${{ inputs.k3s-channel }}"`, and an unquoted `${{ inputs.extra-setup-args }}` passed as an argument to the install script. Any of these inputs can inject shell commands.
+
+Locations:
+
+- `action.yml:105`
+- `action.yml:122`
+- `action.yml:125`
+- `action.yml:131`
+
+### script-injection (severity: high)
+
+Rule (a): the 'Setup Helm' step puts expressions straight into the run: script: `echo "::group::Setup Helm ${{ inputs.helm-version }}"` and `DESIRED_VERSION="${{ inputs.helm-version }}" bash`.
+
+Locations:
+
+- `action.yml:189`
+- `action.yml:190`
+
+### script-injection (severity: high)
+
+Rule (a): the 'Wait for calico, coredns, metrics server, traefik' step puts expressions straight into the run: script: `if [[ "${{ inputs.metrics-enabled }}" == true ]]` and `if [[ "${{ inputs.traefik-enabled }}" == true ]]`.
+
+Locations:
+
+- `action.yml:222`
+- `action.yml:228`
 
 ### unsafe-shell (severity: high)
 
-Two `run:` blocks pipe remote content directly to a shell interpreter without first saving to a file for inspection:
-1. `curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${{ inputs.k3s-version }}" INSTALL_K3S_CHANNEL="${{ inputs.k3s-channel }}" sh -s - ...` — the k3s install script is fetched and piped directly to `sh`. Additionally, `${{ inputs.extra-setup-args }}` is passed unquoted as a direct shell argument, compounding the injection risk.
-2. `curl -sf https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | DESIRED_VERSION="${{ inputs.helm-version }}" bash` — the Helm install script is fetched and piped directly to `bash`.
-In both cases the script should be downloaded to a temporary file, its integrity verified (e.g., checksum), and then executed separately.
+Remote content is piped straight to a shell: `curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION=... sh -s - ...` in the 'Setup k3s' step.
 
 Locations:
 
-- `action.yml:113`
-- `action.yml:144`
+- `action.yml:125`
+
+### unsafe-shell (severity: high)
+
+Remote content is piped straight to a shell: `curl -sf https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3 | DESIRED_VERSION=... bash` in the 'Setup Helm' step. The script comes from the mutable master branch.
+
+Locations:
+
+- `action.yml:190`
+
+### github-env-injection (severity: high)
+
+The 'Prepare a kubeconfig' step writes `echo "KUBECONFIG=$HOME/.kube/config" >> $GITHUB_ENV`. $HOME is inherited from the calling environment, so the calling workflow controls it, and the step does not run it through `printf '%s' ... | tr -d '\n\r'` before the write.
+
+Locations:
+
+- `action.yml:145`
+
+### github-env-injection (severity: high)
+
+The 'Set version output' step writes values to $GITHUB_OUTPUT with no newline stripping. These are the inherited $HOME (`kubeconfig=$HOME/.kube/config`) and output from commands whose versions are chosen by inputs (k3s --version, helm version, the contents of calico.yaml). None of them go through `printf '%s' ... | tr -d '\n\r'` first.
+
+Locations:
+
+- `action.yml:198`
 
 ### static-inline-injection (severity: high)
 
@@ -170,26 +203,126 @@ Locations:
 
 - `action.yml:226`
 
+### prior-fix (severity: high)
+
+Carried forward from this version's previous harden, which fixed it; fix it again unless the code no longer has the problem. The previous harden changed action.yml without recording a finding for it, and this analysis reported nothing there. Re-apply its security changes unless the code no longer needs them. The previous patch:
+```diff
+diff --git a/action.yml b/action.yml
+index 5c9f27e..a46a532 100644
+--- a/action.yml
++++ b/action.yml
+@@ -7,20 +7,16 @@
+ #
+ # Reference: https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions
+ #
+----
+ name: K3S with Calico and Helm
+ description: |
+   Install Kubernetes (K3S) and Helm 3.
+   Includes Calico network plugin for network policy support.
+-
+ branding:
+   icon: server
+   color: purple
+-
+ # Copied from
+ # https://github.com/jupyterhub/zero-to-jupyterhub-k8s/blob/08c13609c1d0c6cb07d45d49d0a876100cf941eb/ci/common
+ # Thanks @consideratio !
+-
+ inputs:
+   k3s-version:
+     description: K3S version (https://github.com/rancher/k3s/releases)
+@@ -50,7 +46,6 @@ inputs:
+     description: Addition arguments to be passed to the K3S setup script
+     required: false
+     default: ""
+-
+ outputs:
+   kubeconfig:
+     description: Path to kubeconfig file
+@@ -67,10 +62,26 @@ outputs:
+   helm-version:
+     description: "Installed helm version, such as v3.13.0"
+     value: "${{ steps.set-output.outputs.helm-version }}"
+-
+ runs:
+   using: "composite"
+   steps:
+     # https://rancher.com/docs/k3s/latest/en/installation/install-options/how-to-flags/
+     #
+     # NOTE: k3s has a Network Policy controller called kube-router, but it is
+@@ -81,15 +92,17 @@ runs:
+     #       ref: https://github.com/rancher/k3s/issues/947#issuecomment-627641541
+     #
+     - name: Validate input
++      env:
++        INPUT_K3S_VERSION: ${{ inputs.k3s-version }}
++        INPUT_K3S_CHANNEL: ${{ inputs.k3s-channel }}
+       run: |
+         echo "::group::Validate input"
+-        if [[ -n "${{ inputs.k3s-version }}" && -n "${{ inputs.k3s-channel }}" ]]; then
++        if [[ -n "$INPUT_K3S_VERSION" && -n "$INPUT_K3S_CHANNEL" ]]; then
+           echo "k3s-version and k3s-channel must not be specified simultaneously!"
+           exit 1
+         fi
+         echo "::endgroup::"
+       shell: bash
+-
+     # NOTE: We apply a workaround as of version 3.0.1 by passing
+     #       --egress-selector-mode=disabled by default as not doing so following
+     #       modern versions of k3s has led to issues with `kubectl exec` and
+@@ -100,15 +113,22 @@ runs:
+     #       and https://github.com/jupyterhub/action-k3s-helm/issues/59.
+     #
+     - name: Setup k3s ${{ inputs.k3s-version }}${{ inputs.k3s-channel }}
++      env:
++        INPUT_K3S_VERSION: ${{ inputs.k3s-version }}
++        INPUT_K3S_CHANNEL: ${{ inputs.k3s-channel }}
++        INPUT_METRICS_ENABLED: ${{ inputs.metrics-enabled }}
++        INPUT_TRAEFIK_ENABLED: ${{ inputs.traefik-enabled }}
++        INPUT_DOCKER_ENABLED: ${{ inputs.docker-enabled }}
++        INPUT_EXTRA_SETUP_ARGS: ${{ inputs.extra-setup-args }}
+       run: |
+-        echo "::group::Setup k3s ${{ inputs.k3s-version }}${{ inputs.k3s-channel }}"
+-        if [[ "${{ inputs.metrics-enabled }}" != true ]]; then
++        printf '::group::Setup k3s %s%s\n' "$INPUT_K3S_VERSION" "$INPUT_K3S_CHANNEL"
++        if [[ "$INPUT_METRICS_ENABLED" != true ]]; then
+           k3s_disable_metrics="--disable metrics-server"
+         fi
+-        if [[ "${{ inputs.traefik-enabled }}" != true ]]; then
++        if [[ "$INPUT_TRAEFIK_ENABLED" != true ]]; then
+           k3s_disable_traefik="--disable traefik"
+         fi
+-        if [[ "${{ inputs.docker-enabled }}" == true ]]; then
++        if [[ "$INPUT_DOCKER_ENABLED" == true ]]; then
+           k3s_docker=--docker
+         fi
+         # We want to provide a new default value for the --egress-selector-mode
+@@ -118,20 +138,33 @@ runs:
+         # Details about the option available at
+         # https://docs.k3s.io/installation/network-options#control-plane-egress-selector-configuration.
+         #
+-        if [[ "${{ inputs.extra-setup-args }}" != *--egress-selector-mode* ]]; then
++        if [[ "$INPUT_EXTRA_SETUP_ARGS" != *--egress-selector-mode* ]]; then
+           default_extra_setup_args=--egress-selector-mode=disabled
+         fi
+-        curl -sfL https://get.k3s.io | INSTALL_K3S_VERSION="${{ inputs.k3s-version }}" INSTALL_K3S_CHANNEL="${{ inputs.k3s-channel }}" sh -s - \
++
++        # Token
+... (truncated)
+```
+
+Locations:
+
+- `action.yml`
+
 ## Iteration Notes
 
 ### Iteration 1
 
-**Fixes applied:** script-injection, unsafe-shell, static-inline-injection
+**Fixes applied:** script-injection, static-inline-injection, unsafe-shell, github-env-injection, prior-fix
 
 **Notes:**
 
-Fixed all findings in action.yml:
-1. script-injection / static-inline-injection: Moved all ${{ inputs.* }} expressions from run: blocks into env: blocks (INPUT_K3S_VERSION, INPUT_K3S_CHANNEL, INPUT_METRICS_ENABLED, INPUT_TRAEFIK_ENABLED, INPUT_DOCKER_ENABLED, INPUT_EXTRA_SETUP_ARGS, INPUT_HELM_VERSION). Shell scripts now reference these as double-quoted $INPUT_VAR_NAME variables.
-2. unsafe-shell: Fixed both curl-pipe-to-shell patterns: (a) k3s install script is now downloaded to a mktemp file and executed with 'sh "$K3S_INSTALL_SCRIPT" -' (dropped the '--' shell option terminator); (b) Helm install script is now downloaded to a mktemp file and executed with 'DESIRED_VERSION="$INPUT_HELM_VERSION" bash "$HELM_INSTALL_SCRIPT"'.
-3. extra-setup-args list input: Tokenized using the xargs-based array pattern (with guard for empty value) to preserve quote-aware word splitting while preventing injection.
-
-### Iteration 2
-
-**Fixes applied:** script-injection
-
-**Notes:**
-
-Fixed two script injection findings in action.yml:
-1. Line 107 (Setup k3s step): Replaced `echo "::group::Setup k3s $INPUT_K3S_VERSION$INPUT_K3S_CHANNEL"` with `printf '::group::Setup k3s %s%s\n' "$INPUT_K3S_VERSION" "$INPUT_K3S_CHANNEL"`. Using printf with %s format specifiers prevents bash from evaluating command substitutions ($(…) or backticks) that may be embedded in the caller-controlled input values.
-2. Line 152 (Setup Helm step): Replaced `echo "::group::Setup Helm $INPUT_HELM_VERSION"` with `printf '::group::Setup Helm %s\n' "$INPUT_HELM_VERSION"` for the same reason.
+action.yml: moved all inputs.* expressions out of run: scripts into step env: blocks (Validate input, Setup k3s, Setup Helm, Wait step); group headers use printf. extra-setup-args (an argument list upstream inlined as an expression) is tokenized with the quote-aware guarded xargs split into a bash array. k3s and helm installers are now downloaded to temp files and executed separately (dropped the stdin-specific 'sh -s -'). KUBECONFIG write to GITHUB_ENV and all GITHUB_OUTPUT writes are newline-stripped; command outputs captured with '|| true' to preserve upstream's echo-masked failure semantics.
 
