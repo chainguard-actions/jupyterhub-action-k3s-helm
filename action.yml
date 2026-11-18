@@ -7,16 +7,20 @@
 #
 # Reference: https://docs.github.com/en/actions/creating-actions/metadata-syntax-for-github-actions
 #
+---
 name: K3S with Calico and Helm
 description: |
   Install Kubernetes (K3S) and Helm 3.
   Includes Calico network plugin for network policy support.
+
 branding:
   icon: server
   color: purple
+
 # Copied from
 # https://github.com/jupyterhub/zero-to-jupyterhub-k8s/blob/08c13609c1d0c6cb07d45d49d0a876100cf941eb/ci/common
 # Thanks @consideratio !
+
 inputs:
   k3s-version:
     description: K3S version (https://github.com/rancher/k3s/releases)
@@ -46,6 +50,7 @@ inputs:
     description: Addition arguments to be passed to the K3S setup script
     required: false
     default: ""
+
 outputs:
   kubeconfig:
     description: Path to kubeconfig file
@@ -62,6 +67,7 @@ outputs:
   helm-version:
     description: "Installed helm version, such as v3.13.0"
     value: "${{ steps.set-output.outputs.helm-version }}"
+
 runs:
   using: "composite"
   steps:
@@ -103,6 +109,7 @@ runs:
         fi
         echo "::endgroup::"
       shell: bash
+
     # NOTE: We apply a workaround as of version 3.0.1 by passing
     #       --egress-selector-mode=disabled by default as not doing so following
     #       modern versions of k3s has led to issues with `kubectl exec` and
@@ -141,20 +148,16 @@ runs:
         if [[ "${INPUT_EXTRA_SETUP_ARGS}" != *--egress-selector-mode* ]]; then
           default_extra_setup_args=--egress-selector-mode=disabled
         fi
-
-        # Tokenize extra-setup-args the same way the shell would (quote-aware)
         extra_args=()
-        if [ -n "${INPUT_EXTRA_SETUP_ARGS}" ]; then
+        if [ -n "$INPUT_EXTRA_SETUP_ARGS" ]; then
+          printf '%s' "$INPUT_EXTRA_SETUP_ARGS" | xargs -r true >/dev/null   # fails on an unmatched quote
           while IFS= read -r -d '' t; do extra_args+=("$t"); done \
-            < <(printf '%s' "${INPUT_EXTRA_SETUP_ARGS}" | xargs printf '%s\0')
+            < <(printf '%s' "$INPUT_EXTRA_SETUP_ARGS" | xargs -r sh -c 'printf "%s\0" "$@"' sh)
         fi
-
-        # Download the k3s install script to a file before executing it
-        curl -sfL --output /tmp/k3s-install.sh https://get.k3s.io
-        chmod +x /tmp/k3s-install.sh
-        INSTALL_K3S_VERSION="${INPUT_K3S_VERSION}" \
-        INSTALL_K3S_CHANNEL="${INPUT_K3S_CHANNEL}" \
-        sh /tmp/k3s-install.sh \
+        K3S_INSTALL_SCRIPT="$(mktemp)"
+        curl -sfL https://get.k3s.io -o "$K3S_INSTALL_SCRIPT"
+        # shellcheck disable=SC2086
+        INSTALL_K3S_VERSION="${INPUT_K3S_VERSION}" INSTALL_K3S_CHANNEL="${INPUT_K3S_CHANNEL}" sh "$K3S_INSTALL_SCRIPT" \
           ${k3s_disable_metrics} \
           ${k3s_disable_traefik} \
           --disable-network-policy \
@@ -162,8 +165,10 @@ runs:
           ${k3s_docker} \
           "${extra_args[@]}" \
           ${default_extra_setup_args}
+        rm -f "$K3S_INSTALL_SCRIPT"
         echo "::endgroup::"
       shell: bash
+
     # By providing a kubeconfig owned by the current user with 600 permissions,
     # kubectl becomes usable without sudo, and helm won't emit warnings about
     # bloated access to group/world.
@@ -177,6 +182,7 @@ runs:
         echo "KUBECONFIG=${safe_kubeconfig}" >> "$GITHUB_ENV"
         echo "::endgroup::"
       shell: bash
+
     # Install calico as a CNI to enforce our NetworkPolicies. Note that canal
     # could do this job as well.
     #
@@ -205,37 +211,42 @@ runs:
         cat ./*.yaml | kubectl apply -f -
         echo "::endgroup::"
       shell: bash
+
     # There will be some waiting for calico to make the k8s Nodes ready and for
     # the k3s related pods to start and become ready, so there is time to
     # install Helm at this point for example.
     - name: Setup Helm
       env:
-        INPUT_HELM_VERSION: ${{ inputs.helm-version }}
+        HELM_VERSION: ${{ inputs.helm-version }}
       run: |
-        HELM_VERSION="${INPUT_HELM_VERSION}"
         echo "::group::Setup Helm ${HELM_VERSION}"
+        # Pinned to a helm/helm commit instead of the mutable master branch
+        HELM_SCRIPTS_REF=5a09b86219f949e5653eecac91e6bb8de930f0f9
         if [[ "${HELM_VERSION}" == v4* ]]; then
-          HELM_INSTALL_SCRIPT=https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-4
+          HELM_INSTALL_SCRIPT="https://raw.githubusercontent.com/helm/helm/${HELM_SCRIPTS_REF}/scripts/get-helm-4"
         else
-          HELM_INSTALL_SCRIPT=https://raw.githubusercontent.com/helm/helm/master/scripts/get-helm-3
+          HELM_INSTALL_SCRIPT="https://raw.githubusercontent.com/helm/helm/${HELM_SCRIPTS_REF}/scripts/get-helm-3"
         fi
-        # Download the helm install script to a file before executing it
-        curl -sf --output /tmp/helm-install.sh "${HELM_INSTALL_SCRIPT}"
-        chmod +x /tmp/helm-install.sh
-        DESIRED_VERSION="${HELM_VERSION}" bash /tmp/helm-install.sh
+        HELM_INSTALL_FILE="$(mktemp)"
+        curl -sf "${HELM_INSTALL_SCRIPT}" -o "$HELM_INSTALL_FILE"
+        DESIRED_VERSION="${HELM_VERSION}" bash "$HELM_INSTALL_FILE"
+        rm -f "$HELM_INSTALL_FILE"
         echo "::endgroup::"
       shell: bash
+
     - name: Set version output
       id: set-output
       run: |
         echo "::group::Set version output"
-        echo "kubeconfig=$HOME/.kube/config" >> $GITHUB_OUTPUT
+        safe_kubeconfig=$(printf '%s' "$HOME/.kube/config" | tr -d '\n\r')
+        echo "kubeconfig=${safe_kubeconfig}" >> "$GITHUB_OUTPUT"
         echo "k3s-version=$(k3s --version | grep --max-count=1 'k3s' | sed 's/.*\(v[0-9][^ ]*\).*/\1/')" >> $GITHUB_OUTPUT
         echo "k8s-version=$(k3s --version | grep --max-count=1 'k3s' | sed 's/.*\(v[0-9][^+]*\).*/\1/')" >> $GITHUB_OUTPUT
         echo "calico-version=$(cat /tmp/calico.yaml | grep --max-count=1 'calico/cni:v' | sed 's/.*calico\/cni:\(.*\)/\1/')" >> $GITHUB_OUTPUT
         echo "helm-version=$(helm version --short | sed 's/\([^+]*\).*/\1/')" >> $GITHUB_OUTPUT
         echo "::endgroup::"
       shell: bash
+
     - name: Wait for calico, coredns, metrics server, traefik
       env:
         INPUT_METRICS_ENABLED: ${{ inputs.metrics-enabled }}
